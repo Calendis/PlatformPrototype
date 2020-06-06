@@ -2,13 +2,17 @@ package live.inasociety.characters;
 
 import live.inasociety.arena.Arena;
 import live.inasociety.arena.ArenaBody;
+import live.inasociety.data.ControlParameters;
+import live.inasociety.interactors.HurtBox;
+import live.inasociety.mylib.EvictingList;
+import org.newdawn.slick.Image;
 
 import java.util.ArrayList;
 
 public abstract class Character {
     private String name;
 
-    private double[] pos = new double[2];
+    private double[] pos;
     private double[] vel = new double[2];
     private double[] angularAccel = new double[2];
     private int width;
@@ -16,6 +20,7 @@ public abstract class Character {
     private int[] boxColour = new int[]{0, 0, 0};
 
     private double maxGroundVel;
+    private double maxWalkVel;
     private double maxAirVel;
     private double groundAccel;
     private double airAccel;
@@ -28,30 +33,55 @@ public abstract class Character {
     private double weight;
     private int dashLength;
     private int turnAroundLength;
+    private int landingLength;
+    private int airDashLength;
+
+    private enum WalkState {
+        WALKING,
+        DASHING,
+        TO_RUNNING,
+        RUNNING,
+        NONE
+    };
+
+    private WalkState walkState = WalkState.NONE;
 
     private boolean grounded = false;
     private boolean stopping = false;
     private boolean jumped = false;
-    private boolean dashing = false;
+
     private boolean fastFalling = false;
     private boolean doubleJumped = false;
     private boolean droppingThrough = false;
+    private boolean facingRight = true;
+
+    private EvictingList<Boolean> landingDetector = new EvictingList<>(2);
 
     private int lagFrames = 0;
     private int dashFrames = 0;
     private int turnAroundFrames = 0;
+    private int airDashCancelFrames = 0;
+    private int currentAnimationLength = 0;
+
+    private ArrayList<HurtBox> hurtBoxes;
+    private HurtBox feetBox;
 
     private boolean jumpPressed = false;
 
-    protected Character(String name, int width, int height,
-                        double maxGroundVel, double maxAirVel, double groundAccel, double airAccel,
+    private CharacterSpriteSheet characterSpriteSheet;
+
+    protected Character(double[] pos, String name, int width, int height,
+                        double maxGroundVel, double maxWalkVel, double maxAirVel, double groundAccel, double airAccel,
                         double fallSpeed, double fastFallMultiplier,
                         double jumpStrength, double doubleJumpStrength, double groundStoppingSpeed, double airStoppingSpeed,
-                        double weight, int dashLength, int turnAroundLength) {
+                        double weight, int dashLength, int turnAroundLength, int landingLength, int airDashLength,
+                        CharacterSpriteSheet characterSpriteSheet, HurtBox feetBox) {
+        this.pos = pos;
         this.name = name;
         this.width = width;
         this.height = height;
         this.maxGroundVel = maxGroundVel;
+        this.maxWalkVel = maxWalkVel;
         this.maxAirVel = maxAirVel;
         this.groundAccel = groundAccel;
         this.airAccel = airAccel;
@@ -64,14 +94,21 @@ public abstract class Character {
         this.weight = weight;
         this.dashLength = dashLength;
         this.turnAroundLength = turnAroundLength;
+        this.landingLength = landingLength;
+        this.airDashLength = airDashLength;
+        this.characterSpriteSheet = characterSpriteSheet;
+        this.feetBox = feetBox;
 
-        pos[0] = 400;
-        pos[1] = 340;
+        landingDetector.evictingAdd(true);
+        landingDetector.evictingAdd(true);
+
+        hurtBoxes = new ArrayList<>();
+        hurtBoxes.add(feetBox);
 
     }
 
     public void update() {
-        // Reduce lag frames first
+        // Count down lag frames
         if (lagFrames > 0) {
             lagFrames --;
         }
@@ -81,39 +118,76 @@ public abstract class Character {
         if (turnAroundFrames > 0) {
             turnAroundFrames --;
         }
+        if (airDashCancelFrames > 0) {
+            airDashCancelFrames --;
+        }
 
-        // Update states
+        // Calculate x and y components of acceleration
+        double accelX = angularAccel[1]*Math.cos(angularAccel[0]);
+        double accelY = -angularAccel[1]*Math.sin(angularAccel[0]); // y is swapped from normal cartesian plane!
+
+        // Truncate to hundreds place. This smooths precision errors from converting degrees to radians
+        accelX = truncateToHundreds(accelX);
+        accelY = truncateToHundreds(accelY);
+
+        /*
+            UPDATE STATES/FLAGS
+         */
+
+        // Are we moving vertically?
         if (vel[1] != 0) {
+            // Then we're not grounded
             grounded = false;
         }
+
+        // Are we grounded?
         if (grounded) {
+            // Then we get our jumps back, and we're not falling
             jumped = false;
             doubleJumped = false;
             fastFalling = false;
+            landingDetector.evictingAdd(true);
+            detectLanding();
         }
-        if (dashFrames < 1) {
-            dashing = false;
+        else {
+            landingDetector.evictingAdd(false);
         }
 
-        // Update vel from accel
-        double accelX = angularAccel[1]*Math.cos(angularAccel[0]);
-        double accelY = -angularAccel[1]*Math.sin(angularAccel[0]); // y is swapped from normal cartesian plane!
-        vel[0] += accelX;
-        vel[1] += accelY;
+        // If we're about to run out of dash frames...
+        if (dashFrames == 1) {
+            // start the transition from dashing to running (this can be cancelled)
+            walkState = WalkState.TO_RUNNING;
+        }
+        else if (dashFrames < 1) {
+            // If we run out of dash frames and we're not running...
+            if (walkState != WalkState.RUNNING) {
+                // we must be walking or stopped. The stopped case is already covered
+                walkState = WalkState.WALKING;
+            }
+        }
 
-        // Update pos from vel
-        pos[0] += vel[0];
-        pos[1] += vel[1];
+        // Are we stationary horizontally?
+        if (vel[0] == 0) {
+            // Then our walk state should be none
+            walkState = WalkState.NONE;
+        }
 
         // Reset accel
         angularAccel[1] = 0;
 
+        // Apply velocity limits
         if (grounded) {
-            if (vel[0] > maxGroundVel) {
-                vel[0] = maxGroundVel;
+            // Apply grounded velocity limits
+            double conditionalMaxVel = maxGroundVel;
+            if (walkState == WalkState.WALKING) {
+                conditionalMaxVel = maxWalkVel;
             }
-            else if (vel[0] < -maxGroundVel) {
-                vel[0] = -maxGroundVel;
+
+            if (vel[0] > conditionalMaxVel) {
+                vel[0] = conditionalMaxVel;
+            }
+            else if (vel[0] < -conditionalMaxVel) {
+                vel[0] = -conditionalMaxVel;
             }
 
             if (stopping) {
@@ -124,52 +198,70 @@ public abstract class Character {
                 droppingThrough = false;
             }
 
-            // Friction
-            if (vel[0] > 0) {
-                vel[0] -= groundStoppingSpeed;
-                if (vel[0] < 0) {
-                    vel[0] = 0;
-                }
-            } else if (vel[0] < 0) {
-                vel[0] += groundStoppingSpeed;
+            // Ground friction
+            if (walkState != WalkState.DASHING && walkState != WalkState.TO_RUNNING) {
                 if (vel[0] > 0) {
-                    vel[0] = 0;
+                    vel[0] -= groundStoppingSpeed;
+                    if (vel[0] < 0) {
+                        vel[0] = 0;
+                    }
+                } else if (vel[0] < 0) {
+                    vel[0] += groundStoppingSpeed;
+                    if (vel[0] > 0) {
+                        vel[0] = 0;
+                    }
                 }
             }
         }
-        else {
-            // Character is airborne
-            if (vel[0] > maxAirVel) {
-                vel[0] = maxAirVel;
-            }
-            else if (vel[0] < -maxAirVel) {
-                vel[0] = -maxAirVel;
-            }
-
-            if (vel[1] > fallSpeed && !fastFalling) {
-                vel[1] = fallSpeed;
-            } else if (vel[1] > fallSpeed*fastFallMultiplier && fastFalling) {
-                vel[1] = fallSpeed*fastFallMultiplier;
-            }
-
-            // Air friction
-            if (vel[0] > 0) {
-                vel[0] -= airStoppingSpeed;
-                if (vel[0] < 0) {
-                    vel[0] = 0;
+        // Character is actionable
+        if (lagFrames < 1) {
+            if (!grounded) {
+                // Character is airborne
+                // Apply aerial velocity limits, but only while not in hit stun
+                if (vel[0] > maxAirVel) {
+                    vel[0] = maxAirVel;
                 }
-            } else if (vel[0] < 0) {
-                vel[0] += airStoppingSpeed;
+                else if (vel[0] < -maxAirVel) {
+                    vel[0] = -maxAirVel;
+                }
+
+                if (vel[1] > fallSpeed && !fastFalling) {
+                    vel[1] = fallSpeed;
+                } else if (vel[1] > fallSpeed*fastFallMultiplier && fastFalling) {
+                    vel[1] = fallSpeed*fastFallMultiplier;
+                }
+
+                // Air friction
                 if (vel[0] > 0) {
-                    vel[0] = 0;
+                    //vel[0] -= airStoppingSpeed;
+                    if (vel[0] < 0) {
+                        vel[0] = 0;
+                    }
+                } else if (vel[0] < 0) {
+                    //vel[0] += airStoppingSpeed;
+                    if (vel[0] > 0) {
+                        vel[0] = 0;
+                    }
                 }
             }
         }
 
+        // Update vel from accel
+        vel[0] += accelX;
+        vel[1] += accelY;
 
+        // Update pos from vel
+        pos[0] += vel[0];
+        pos[1] += vel[1];
+
+        // Update position of hurt boxes
+        for (HurtBox hurtBox : hurtBoxes) {
+            hurtBox.update(pos[0], pos[1]);
+        }
     }
 
     public void applyForce(double angle, double magnitude) {
+        // This method sets instantaneous acceleration
         angle = Math.toRadians(angle);
         double accelX = angularAccel[1]*Math.cos(angularAccel[0]);
         double accelY = angularAccel[1]*Math.sin(angularAccel[0]);
@@ -190,16 +282,13 @@ public abstract class Character {
             int arenaBodyY = arenaBody.getY(screenHeight, arena.getHeight());
 
             /*
-            THE FIRST CONDITION OF THIS IF STATEMENT DETECTS CURRENT COLLISIONS WITH PLATFORMS
-            THE SECOND CONDITION DETECTS FUTURE COLLISIONS BASED ON VELOCITY ADDING TO POSITION
-            TODO: ADD THIRD CONDITION BASED ON ACCELERATION
+                THE FIRST CONDITION OF THIS IF STATEMENT DETECTS CURRENT COLLISIONS WITH PLATFORMS
+                THE SECOND CONDITION DETECTS FUTURE COLLISIONS BASED ON VELOCITY ADDING TO POSITION
              */
             if (
-                            (pos[1]+height > arenaBodyY && pos[1] < arenaBodyY + arenaBody.getHeight() &&
-                            pos[0]+width > arenaBodyX && pos[0] < arenaBodyX+arenaBody.getWidth())
+                            (feetBox.isColliding(arenaBody, arenaBodyX, arenaBodyY, 0, 0))
                     ||
-                            (pos[1]+vel[1]+height > arenaBodyY && pos[1]+vel[1] < arenaBodyY + arenaBody.getHeight() &&
-                            pos[0]+vel[0]+width > arenaBodyX && pos[0]+vel[0] < arenaBodyX+arenaBody.getWidth())
+                            (feetBox.isColliding(arenaBody, arenaBodyX, arenaBodyY, vel[0], vel[1]))
             ) {
                 switch (arenaBody.getWallType()) {
                     case FLOOR:
@@ -240,81 +329,251 @@ public abstract class Character {
         }
     }
 
-    public void dash(double angle, double magnitude) {
-        if (lagFrames < 1) {
-            if (Math.abs(magnitude) < groundStoppingSpeed / 1.5) {
-                // Move normally if we're moving slowly
-                applyForce(angle, groundAccel*magnitude);
+    private void groundMove(double angle, double magnitude) {
+        // Are we actionable?
+        if (lagFrames < 1 && turnAroundFrames < 1) {
+            double absoluteMagnitude = Math.abs(magnitude);
+            int inputDirection = (int) (magnitude / absoluteMagnitude);
+            int currentDirection = (int) (vel[0] / Math.abs(vel[0]));
+
+            // Move differently depending on our current movement state
+            switch (walkState) {
+
+                // If we're stationary, or if we're walking...
+                case NONE:
+
+                case WALKING:
+                    // Walk with no complications
+                    if (absoluteMagnitude <= ControlParameters.dashThreshold) {
+                        applyForce(angle, groundAccel*magnitude);
+                        walkState = WalkState.WALKING;
+                    }
+                    // And dash with no complications
+                    else {
+                        applyForce(0, inputDirection*groundAccel);
+                        walkState = WalkState.DASHING;
+                        dashFrames = dashLength;
+                    }
+                    turnAround(false, inputDirection);
+                    break;
+
+                // If we're dashing...
+                case DASHING:
+                    // We can't walk at all
+                    if (absoluteMagnitude > ControlParameters.dashThreshold) {
+                        if (currentDirection != inputDirection) {
+                            // We can chain another dash, but only in the opposite direction
+                            dashFrames = dashLength;
+                            vel[0] = maxGroundVel * magnitude / absoluteMagnitude;
+                            turnAround(false, inputDirection);
+                            walkState = WalkState.DASHING;
+                        }
+                        else
+                        {
+                            // If the direction is the same
+                            // then maintain the dash velocity, but don't chain dash frames
+                            applyForce(0, inputDirection*groundAccel);
+                        }
+                    }
+                    break;
+
+                // If we're transitioning to running...
+                case TO_RUNNING:
+                    if (absoluteMagnitude > ControlParameters.dashThreshold) {
+                        walkState = WalkState.RUNNING;
+                    }
+                    else {
+                        walkState = WalkState.WALKING;
+                    }
+                    break;
+
+                // If we're running...
+                case RUNNING:
+                    // We can keep running but only in the same direction
+                    if (
+                            absoluteMagnitude > ControlParameters.dashThreshold &&
+                            currentDirection == inputDirection
+                    ) {
+
+                        //vel[0] = maxGroundVel * inputDirection;
+                        applyForce(0, inputDirection*groundAccel);
+                    }
+
+                    // Other movement is only available after a turnaround. This makes running most committal
+                    if (currentDirection != inputDirection) {
+                        turnAround(true, inputDirection);
+                        walkState = WalkState.NONE;
+                    }
+                    break;
+            }
+        }
+    }
+
+    public void move(double angle, double horizontalMagnitude, double verticalMagnitude) {
+
+        // Did the player push the stick past the move threshold?
+        double absoluteHorizonstalMagnitude = Math.abs(horizontalMagnitude);
+        if (absoluteHorizonstalMagnitude > ControlParameters.moveThreshold) {
+            // Then move according to air and ground rules
+            if (grounded) {
+                groundMove(angle, horizontalMagnitude);
             }
             else {
-                // Otherwise, perform the dash logic
-                if (vel[0] == 0) {
-                    // If we're stationary and not currently dashing, perform a dash, where mag. is always 1 or -1
-                    // Also we can never dash during turn-around
-                    if (!dashing && turnAroundFrames == 0) {
-                        dashing = true;
-                        dashFrames = dashLength;
-                        vel[0] = maxGroundVel * magnitude / Math.abs(magnitude);
-                        //applyForce(angle, groundAccel * magnitude/Math.abs(magnitude));
-                    }
+                drift(angle, horizontalMagnitude);
+            }
+        }
 
-                } else {
-                    if (dashing) {
-                        // If we're currently dashing, we can chain another dash, but only in the opposite direction
-                        if (vel[0] / Math.abs(vel[0]) != magnitude / Math.abs(magnitude)) {
-                            if (turnAroundFrames == 0) {
-                                dashFrames = dashLength;
-                                vel[0] = maxGroundVel * magnitude / Math.abs(magnitude);
-                            }
-                        } else {
-                            // Move in same direction without dash
-                            applyForce(angle, groundAccel * magnitude);
-                        }
-                    } else {
-                        // We're not dashing, but not stationary
-                        if (vel[0] / Math.abs(vel[0]) == magnitude / Math.abs(magnitude)) {
-                            // Move in the same direction normally
-                            applyForce(angle, groundAccel * magnitude);
-                        } else {
-                            // Turnaround movement, which has weaker acceleration
-                            if (Math.abs(vel[0]) > maxGroundVel/2) {
-                                turnAroundFrames = turnAroundLength;
-                            }
-                            applyForce(angle, groundAccel * magnitude / 100);
-                        }
-                    }
+        // Also turnaround if they pushed it at least a LITTLE
+        if (absoluteHorizonstalMagnitude > 0 && grounded) {
+            turnAround(false, horizontalMagnitude / absoluteHorizonstalMagnitude);
+        }
 
+        // Is the player trying to crouch or fastfall?
+        // TODO: implement crouch method
+        if (verticalMagnitude > ControlParameters.fastFallThreshold) {
+            fastFall();
+        }
+        else stopping = verticalMagnitude > ControlParameters.crouchThreshold;
+
+    }
+
+    private void drift(double angle, double magnitude) {
+
+        if (walkState == WalkState.DASHING && vel[0] / Math.abs(vel[0]) != magnitude / Math.abs(magnitude)) {
+            // Cancel an air dash by tapping in the opposite direction
+            // This is so you can use an aerial other than a dash aerial out of a dash
+            dashFrames = 0;
+        }
+        if (airDashCancelFrames < 1) {
+            applyForce(angle, airAccel*magnitude);
+        } else if (magnitude / Math.abs(magnitude) == magnitudeOfFaceDirection()) {
+            // You can't drift back for a few frames after an air dash cancel
+            // This is so you don't get erroneous drift after an air dash cancel
+            applyForce(angle, airAccel*magnitude);
+        }
+    }
+
+    public void jump() {
+        if (lagFrames < 1) {
+            droppingThrough = false;
+            if (grounded && !jumped && !jumpPressed) {
+                vel[1] = 0;
+                angularAccel[1] = 0;
+                applyForce(90, jumpStrength);
+                jumped = true;
+                jumpPressed = true;
+                if (dashFrames > 0) {
+                    // Jumping during dash extends dash frames to allow for freer use of dash aerials
+                    dashFrames = airDashLength;
+                    airDashCancelFrames = airDashLength;
+                }
+            }
+            if (!doubleJumped && !jumpPressed) {
+                // Double jump
+                vel[1] = 0;
+                angularAccel[1] = 0;
+                applyForce(90, doubleJumpStrength);
+                doubleJumped = true;
+                fastFalling = false;
+                jumped = true;
+                jumpPressed = true;
+                if (dashFrames > 0) {
+                    // Double jumping during dash extends dash frames to allow for freer use of dash aerials
+                    dashFrames = airDashLength;
+                    airDashCancelFrames = airDashLength;
                 }
             }
         }
     }
 
-    public void drift(double angle, double magnitude) {
-        applyForce(angle, airAccel*magnitude);
+    public void attack(double xMagnitude, double yMagnitude) {
+        // Character is actionable
+        if (lagFrames < 1 && turnAroundFrames < 1) {
+            // No attacking in turnaround or lag
+            if (grounded) {
+                // Grounded attacks
+                if (Math.abs(yMagnitude) < ControlParameters.verticalAttackThreshold) {
+
+                    if (Math.abs(xMagnitude) < ControlParameters.horizontalAttackThreshold) {
+                        System.out.println("Jab");
+                        characterSpriteSheet.setAnimationRow(1);
+                    }
+                    else {
+                        System.out.println("Side attack");
+                    }
+
+                }
+                else if (yMagnitude < ControlParameters.verticalAttackThreshold) {
+                    System.out.println("Up attack");
+                }
+                else if (yMagnitude > ControlParameters.verticalAttackThreshold){
+                    System.out.println("Down attack");
+                }
+
+            } else {
+                // Aerial attacks
+                if (dashFrames > 0){
+                    System.out.println("Dash aerial");
+                }
+                else if (Math.abs(yMagnitude) < ControlParameters.aerialAttackThreshold) {
+                    if (Math.abs(xMagnitude) < ControlParameters.aerialAttackThreshold) {
+                        System.out.println("Neutral aerial");
+                    }
+                    else if (xMagnitude / Math.abs(xMagnitude) == magnitudeOfFaceDirection()) {
+                        System.out.println("Forward aerial");
+                    }
+                    else {
+                        System.out.println("Back aerial");
+                    }
+                }
+                else if (yMagnitude < ControlParameters.aerialAttackThreshold) {
+                    System.out.println("Up aerial");
+                }
+                else if (yMagnitude > ControlParameters.aerialAttackThreshold){
+                    System.out.println("Down aerial");
+                }
+            }
+        }
     }
 
-    public void jump() {
-        if (grounded && !jumped && !jumpPressed) {
-            applyForce(90, jumpStrength);
-            jumped = true;
-            jumpPressed = true;
-        }
-        if (!doubleJumped && !jumpPressed) {
-            // Double jump
-            vel[1] = 0;
-            applyForce(90, doubleJumpStrength);
-            doubleJumped = true;
-            fastFalling = false;
-            jumped = true;
-            jumpPressed = true;
-        }
-    }
-
-    public void fastFall() {
+    private void fastFall() {
         if(!fastFalling && vel[1] < fallSpeed*fastFallMultiplier && vel[1] > -0.1) {
             vel[1] = fallSpeed * fastFallMultiplier;
             fastFalling = true;
         }
+    }
+
+    private void turnAround(boolean lag, double direction) {
+        // Turn the character around from the current direction
+        boolean changed = false;
+        if (direction == 1) {
+            facingRight = true;
+            changed = true;
+        }
+        else {
+            facingRight = false;
+            changed = true;
+        }
+        if (lag && changed) {
+            turnAroundFrames = turnAroundLength;
+        }
+    }
+
+    private void detectLanding() {
+        if (!landingDetector.get(0) && landingDetector.get(1)) {
+            lagFrames = landingLength;
+        }
+    }
+
+    private double truncateToHundreds(double d) {
+        // Rounds the position, velocity, and acceleration to two decimal places
+        // This smooths out floating point errors from converting degrees to radians
+        return ((double)(int)(d*100))/100;
+
+    }
+
+    private int magnitudeOfFaceDirection() {
+        return (facingRight ? 1 : -1);
     }
 
     public double getX() {
@@ -361,13 +620,24 @@ public abstract class Character {
     }
 
     public int[] getBoxColour() {
-        if (turnAroundFrames > 0) {
-            return new int[] {255, 0, 255};
+        if (lagFrames > 0) {
+            return new int[] {255, 0, 0};
         }
-        if (dashing) {
+        if (turnAroundFrames > 0) {
+            return new int[] {255, 255, 0};
+        }
+        if (dashFrames > 0) {
             return new int[] {0, 0, 255};
         }
         return boxColour;
+    }
+
+    public Image getImage() {
+        return characterSpriteSheet.getCurrentImage(!facingRight);
+    }
+
+    public HurtBox getFeetBox() {
+        return feetBox;
     }
 
     public boolean isGrounded() {
@@ -376,10 +646,6 @@ public abstract class Character {
 
     public boolean isJumped() {
         return jumped;
-    }
-
-    public boolean isDashing() {
-        return dashing;
     }
 
     public boolean isFastFalling() {
@@ -412,10 +678,6 @@ public abstract class Character {
     public void setJumped(boolean jumped) {
         this.jumped = jumped;
 
-    }
-
-    public void setDashed(boolean dashing) {
-        this.dashing = dashing;
     }
 
     public void setJumpPressed(boolean jumpPressed) {

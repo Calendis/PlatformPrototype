@@ -1,0 +1,15 @@
+# Every frame should be encapsulated in []
+[
+# each frame should contain a rect (x1, y1, x2, y2), each separated by a comma
+# each rect should be preceeded by X if a a hitbox and C if a hurtbox
+# each hitbox should have a power after it
+]
+
+[
+X 0 0 16 16 20, # 16x16 square hitbox on char at 0, 0 with power 20
+X 0 16 32 16 10, # 32x16 rectangular hitbox on char at 0, 16 with power 10
+C 0 0 24 60 # 24x60 rectangular hurtbox on char at 0, 0
+]
+
+[
+]

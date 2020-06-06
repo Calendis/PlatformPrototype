@@ -5,6 +5,8 @@ import live.inasociety.arena.ArenaBody;
 import live.inasociety.arena.ArenaLoader;
 import live.inasociety.characters.Character;
 import live.inasociety.characters.Rizzko;
+import live.inasociety.data.ControlParameters;
+import live.inasociety.data.PhysicsParameters;
 import org.newdawn.slick.*;
 
 import java.util.logging.Level;
@@ -18,7 +20,7 @@ public class PlatformPrototype extends BasicGame{
     private Arena currentArena;
     private Character currentCharacter;
 
-    public PlatformPrototype(String n) {
+    private PlatformPrototype(String n) {
         super(n);
     }
 
@@ -39,60 +41,62 @@ public class PlatformPrototype extends BasicGame{
     @Override
     public void init(GameContainer gameContainer) throws SlickException {
 
-        currentArena = ArenaLoader.loadArena("default");
-        currentCharacter = new Rizzko();
+        currentArena = ArenaLoader.loadArena("test_arena");
+        currentCharacter = new Rizzko(new double[] {200, 0});
 
     }
+
 
     @Override
     public void update(GameContainer gameContainer, int i) throws SlickException {
         // Poll the controller
         input.poll(screenWidth, screenHeight);
-        if (input.isButtonPressed(0, 0)) {
-            //System.out.println("A");
+
+        /*
+            PROCESS DIGITAL INPUTS
+        */
+
+        // Is the jump button pressed?
+        if (input.isButtonPressed(ControlParameters.jumpButton, 0)) {
                 currentCharacter.jump();
-        } else {
-            currentCharacter.setJumpPressed(false);
-        }
-        if (input.isButtonPressed(1, 0)) {
-            //System.out.println("B");
-            System.out.println("B pressed");
-        }
-        if (input.isButtonPressed(2, 0)) {
-            //System.out.println("X");
-            System.out.println("X pressed");
-        }
-        if (input.isButtonPressed(3, 0)) {
-            //System.out.println("Y");
-            System.out.println("Y pressed");
-        }
-        if (input.getAxisValue(0, 0) < 0 || input.getAxisValue(0, 0) > 0) {
-            if (currentCharacter.isGrounded()) {
-                currentCharacter.dash(0, input.getAxisValue(0, 0));
-            }
-            else {
-                currentCharacter.drift(0, input.getAxisValue(0, 0));
-            }
-        }
-
-        if (input.getAxisValue(0, 0) < 0.4 && input.getAxisValue(0, 0) > -0.4 &&
-        input.getAxisValue(0, 1) > 0.9) {
-            if (currentCharacter.isGrounded()) {
-                currentCharacter.setStopping(true);
-            }
-            else {
-                currentCharacter.fastFall();
-            }
-
         }
         else {
-            currentCharacter.setStopping(false);
+            currentCharacter.setJumpPressed(false);
         }
 
+        // Is the attack button pressed?
+        if (input.isButtonPressed(ControlParameters.attackButton, 0)) {
+            currentCharacter.attack(
+                    input.getAxisValue(0, ControlParameters.mainStickHorizontal),
+                    input.getAxisValue(0, ControlParameters.mainStickVertical)
+            );
+        }
+
+        // Is the shield button pressed?
+        if (input.isButtonPressed(ControlParameters.shieldButton, 0)) {
+            System.out.println("shield");
+        }
+
+        // Is the special button pressed?
+        if (input.isButtonPressed(ControlParameters.specialButton, 0)) {
+            System.out.println("special");
+        }
+
+        /*
+            PROCESS ANALOG INPUTS
+         */
+        double currentMainStickHorizontal = input.getAxisValue(0, ControlParameters.mainStickHorizontal);
+        double currentMainStickVertical = input.getAxisValue(0, ControlParameters.mainStickVertical);
+        double currentAltStickHorizontal = input.getAxisValue(0, ControlParameters.altStickHorizontal);
+        double currentAltStickVertical = input.getAxisValue(0, ControlParameters.altStickVertical);
+
+        // The character handles controller inputs for movement
+        currentCharacter.move(0, currentMainStickHorizontal, currentMainStickVertical);
 
         // Gravity
-        currentCharacter.applyForce(270, 1.2);
+        currentCharacter.applyForce(PhysicsParameters.gravityDirection, PhysicsParameters.gravityMagnitude);
 
+        // Do physics
         currentCharacter.testCollisions(currentArena, screenWidth, screenHeight);
         currentCharacter.update();
 
@@ -112,7 +116,11 @@ public class PlatformPrototype extends BasicGame{
         }
         // Render the character
         graphics.setColor(new Color(currentCharacter.getBoxColour()[0], currentCharacter.getBoxColour()[1], currentCharacter.getBoxColour()[2]));
-        graphics.fillRect((float)currentCharacter.getX(), (float)currentCharacter.getY(), currentCharacter.getWidth(), currentCharacter.getHeight());
+
+        graphics.fillRect((float)currentCharacter.getFeetBox().getX(), (float)currentCharacter.getFeetBox().getY(),
+                (float)currentCharacter.getFeetBox().getWidth(), (float)currentCharacter.getFeetBox().getHeight());
+
+        currentCharacter.getImage().draw((float)currentCharacter.getX(), (float)currentCharacter.getY());
     }
 
 

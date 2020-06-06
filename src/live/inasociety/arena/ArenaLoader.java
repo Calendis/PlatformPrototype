@@ -29,7 +29,7 @@ public class ArenaLoader {
     public static Arena loadArena(String arenaFileName) {
         try {
             // Convert the name of the arena into a proper file path
-            arenaFileName = "./arenas/" + arenaFileName+".saf";
+            arenaFileName = "./resources/arenas/" + arenaFileName+".saf";
 
             File arenaFile = new File(arenaFileName);
             BufferedReader br = new BufferedReader(new FileReader(arenaFile));
