@@ -43,6 +43,7 @@ public class PlatformPrototype extends BasicGame{
 
         currentArena = ArenaLoader.loadArena("test_arena");
         currentCharacter = new Rizzko(new double[] {200, 0});
+        //currentCharacter.loadMoves();
 
     }
 
@@ -99,7 +100,6 @@ public class PlatformPrototype extends BasicGame{
         // Do physics
         currentCharacter.testCollisions(currentArena, screenWidth, screenHeight);
         currentCharacter.update();
-
     }
 
     @Override

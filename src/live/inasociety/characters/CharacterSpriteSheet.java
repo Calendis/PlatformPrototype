@@ -30,4 +30,8 @@ public class CharacterSpriteSheet extends SpriteSheet {
     public Image getCurrentImage(boolean facingRight) {
         return getSubImage(animationFrame, animationRow).getFlippedCopy(facingRight, false);
     }
+
+    public int getAnimationFrame() {
+        return animationFrame;
+    }
 }

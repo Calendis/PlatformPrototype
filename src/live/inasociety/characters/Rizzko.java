@@ -4,6 +4,9 @@ import live.inasociety.interactors.HurtBox;
 import org.newdawn.slick.Image;
 import org.newdawn.slick.SlickException;
 
+import java.io.IOException;
+import java.net.URISyntaxException;
+
 public class Rizzko extends Character {
     private static int width = 78;
     private static int height = 59;

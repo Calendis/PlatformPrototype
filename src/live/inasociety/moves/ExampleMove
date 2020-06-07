@@ -12,4 +12,6 @@ C 0 0 24 60 # 24x60 rectangular hurtbox on char at 0, 0
 ]
 
 [
+# you should not include blank frames
+# any hitboxes MUST come before hurtboxes!
 ]

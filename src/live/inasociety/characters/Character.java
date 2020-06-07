@@ -3,7 +3,10 @@ package live.inasociety.characters;
 import live.inasociety.arena.Arena;
 import live.inasociety.arena.ArenaBody;
 import live.inasociety.data.ControlParameters;
+import live.inasociety.interactors.HitBox;
 import live.inasociety.interactors.HurtBox;
+import live.inasociety.moves.Move;
+import live.inasociety.moves.MoveLoader;
 import live.inasociety.mylib.EvictingList;
 import org.newdawn.slick.Image;
 
@@ -36,13 +39,16 @@ public abstract class Character {
     private int landingLength;
     private int airDashLength;
 
+    private Move activeMove = null;
+    private Move jab;
+
     private enum WalkState {
         WALKING,
         DASHING,
         TO_RUNNING,
         RUNNING,
         NONE
-    };
+    }
 
     private WalkState walkState = WalkState.NONE;
 
@@ -56,26 +62,24 @@ public abstract class Character {
     private boolean facingRight = true;
 
     private EvictingList<Boolean> landingDetector = new EvictingList<>(2);
-
+    private boolean jumpPressed = false;
     private int lagFrames = 0;
     private int dashFrames = 0;
     private int turnAroundFrames = 0;
     private int airDashCancelFrames = 0;
     private int currentAnimationLength = 0;
 
+    private CharacterSpriteSheet characterSpriteSheet;
     private ArrayList<HurtBox> hurtBoxes;
+    private ArrayList<HitBox> hitBoxes;
     private HurtBox feetBox;
 
-    private boolean jumpPressed = false;
-
-    private CharacterSpriteSheet characterSpriteSheet;
-
-    protected Character(double[] pos, String name, int width, int height,
-                        double maxGroundVel, double maxWalkVel, double maxAirVel, double groundAccel, double airAccel,
-                        double fallSpeed, double fastFallMultiplier,
-                        double jumpStrength, double doubleJumpStrength, double groundStoppingSpeed, double airStoppingSpeed,
-                        double weight, int dashLength, int turnAroundLength, int landingLength, int airDashLength,
-                        CharacterSpriteSheet characterSpriteSheet, HurtBox feetBox) {
+    Character(double[] pos, String name, int width, int height,
+              double maxGroundVel, double maxWalkVel, double maxAirVel, double groundAccel, double airAccel,
+              double fallSpeed, double fastFallMultiplier,
+              double jumpStrength, double doubleJumpStrength, double groundStoppingSpeed, double airStoppingSpeed,
+              double weight, int dashLength, int turnAroundLength, int landingLength, int airDashLength,
+              CharacterSpriteSheet characterSpriteSheet, HurtBox feetBox) {
         this.pos = pos;
         this.name = name;
         this.width = width;
@@ -103,8 +107,10 @@ public abstract class Character {
         landingDetector.evictingAdd(true);
 
         hurtBoxes = new ArrayList<>();
+        hitBoxes = new ArrayList<>();
         hurtBoxes.add(feetBox);
 
+        loadMoves();
     }
 
     public void update() {
@@ -258,6 +264,13 @@ public abstract class Character {
         for (HurtBox hurtBox : hurtBoxes) {
             hurtBox.update(pos[0], pos[1]);
         }
+
+        // Update position of hit boxes
+        for (HitBox hitBox : hitBoxes) {
+            hitBox.update(pos[0], pos[1]);
+        }
+
+        cycleAnimation();
     }
 
     public void applyForce(double angle, double magnitude) {
@@ -496,6 +509,7 @@ public abstract class Character {
 
                     if (Math.abs(xMagnitude) < ControlParameters.horizontalAttackThreshold) {
                         System.out.println("Jab");
+                        activateMove(jab);
                         characterSpriteSheet.setAnimationRow(1);
                     }
                     else {
@@ -536,6 +550,33 @@ public abstract class Character {
         }
     }
 
+    private void cycleAnimation() {
+        // Play current animation, and check if it's completed
+        if (characterSpriteSheet.getAnimationFrame() >= currentAnimationLength - 2) {
+            characterSpriteSheet.setAnimationFrame(0);
+            characterSpriteSheet.setAnimationRow(0);
+            currentAnimationLength = 0;
+            activeMove = null;
+        }
+        else {
+            characterSpriteSheet.incrementAnimationFrame();
+        }
+
+        if (activeMove != null) {
+            // Get the current hit/hurt boxes for the animation
+            hitBoxes.clear();
+            hitBoxes.addAll(activeMove.getCurrentHitBoxes());
+            hurtBoxes.clear();
+            hurtBoxes.addAll(activeMove.getCurrentHurtBoxes());
+        }
+        else {
+            hitBoxes.clear();
+            hurtBoxes.clear();
+            hurtBoxes.add(feetBox);
+        }
+
+    }
+
     private void fastFall() {
         if(!fastFalling && vel[1] < fallSpeed*fastFallMultiplier && vel[1] > -0.1) {
             vel[1] = fallSpeed * fastFallMultiplier;
@@ -545,15 +586,10 @@ public abstract class Character {
 
     private void turnAround(boolean lag, double direction) {
         // Turn the character around from the current direction
-        boolean changed = false;
-        if (direction == 1) {
-            facingRight = true;
-            changed = true;
-        }
-        else {
-            facingRight = false;
-            changed = true;
-        }
+        boolean changed;
+        boolean oldFacingRight = facingRight;
+        facingRight = direction == 1;
+        changed = !oldFacingRight == facingRight;
         if (lag && changed) {
             turnAroundFrames = turnAroundLength;
         }
@@ -565,11 +601,19 @@ public abstract class Character {
         }
     }
 
+    private void loadMoves() {
+        jab = MoveLoader.loadMove(getResourceName(), "Jab");
+    }
+
+    private void activateMove(Move move) {
+        activeMove = move;
+        currentAnimationLength = move.getDuration();
+    }
+
     private double truncateToHundreds(double d) {
         // Rounds the position, velocity, and acceleration to two decimal places
         // This smooths out floating point errors from converting degrees to radians
         return ((double)(int)(d*100))/100;
-
     }
 
     private int magnitudeOfFaceDirection() {
@@ -654,6 +698,10 @@ public abstract class Character {
 
     public boolean isJumpPressed() {
         return jumpPressed;
+    }
+
+    private String getResourceName() {
+        return name.replaceAll("\\s", "");
     }
 
     public void setAccel(double angle, double magnitude) {

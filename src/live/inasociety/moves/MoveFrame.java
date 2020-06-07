@@ -1,21 +1,24 @@
 package live.inasociety.moves;
 
+import live.inasociety.interactors.HitBox;
+import live.inasociety.interactors.HurtBox;
+
 import java.util.ArrayList;
 
-public class MoveFrame {
-    private ArrayList<int[]> hitBoxes;
-    private ArrayList<int[]> hurtBoxes;
+class MoveFrame {
+    private ArrayList<HitBox> hitBoxes;
+    private ArrayList<HurtBox> hurtBoxes;
 
-    public MoveFrame(ArrayList<int[]> hitBoxes, ArrayList<int[]> hurtBoxes) {
+    MoveFrame(ArrayList<HitBox> hitBoxes, ArrayList<HurtBox> hurtBoxes) {
         this.hitBoxes = hitBoxes;
         this.hurtBoxes = hurtBoxes;
     }
 
-    public void setHitBoxes() {
-        // TODO
+    ArrayList<HitBox> getHitBoxes() {
+        return hitBoxes;
     }
 
-    public void setHurtBoxes() {
-        // TODO
+    ArrayList<HurtBox> getHurtBoxes() {
+        return hurtBoxes;
     }
 }
